@@ -1,10 +1,11 @@
 """
 utils/email_sender.py
-Módulo reutilizable para envío de correos via Office 365 SMTP.
+Módulo reutilizable para envío de correos via Microsoft Graph API.
 
 CONFIGURACION (GitHub Secrets):
-    SMTP_EMAIL    = DiegoMaldonado@insurtechpr.com
-    SMTP_PASSWORD = tu_app_password_de_office365
+    AZURE_CLIENT_ID     = Application (client) ID de Azure
+    AZURE_TENANT_ID     = Directory (tenant) ID de Azure
+    AZURE_CLIENT_SECRET = Client secret de Azure
 
 USO:
     from utils.email_sender import send_email
@@ -16,52 +17,89 @@ USO:
     )
 """
 
-import smtplib
 import os
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
+import requests
 
 # ─────────────────────────────────────────
 # CONFIGURACION — viene de GitHub Secrets
 # ─────────────────────────────────────────
-SMTP_SERVER   = "smtp.office365.com"
-SMTP_PORT     = 587
-SMTP_EMAIL    = os.environ.get("SMTP_EMAIL", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+CLIENT_ID     = os.environ.get("AZURE_CLIENT_ID", "")
+TENANT_ID     = os.environ.get("AZURE_TENANT_ID", "")
+CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET", "")
+SENDER_EMAIL  = "DiegoMaldonado@insurtechpr.com"
+
+
+def get_access_token() -> str:
+    """
+    Obtiene un access token de Microsoft Graph via Client Credentials.
+    """
+    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+    data = {
+        "grant_type":    "client_credentials",
+        "client_id":     CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "scope":         "https://graph.microsoft.com/.default"
+    }
+    response = requests.post(url, data=data)
+    if response.status_code != 200:
+        raise Exception(f"Error obteniendo token: {response.status_code} {response.text}")
+    return response.json()["access_token"]
 
 
 def send_email(to: str, subject: str, html_body: str) -> None:
     """
-    Envía un correo HTML via Office 365 SMTP.
+    Envía un correo HTML via Microsoft Graph API.
 
     Args:
-        to:        Dirección de destino, ej. "DiegoMaldonado@insurtechpr.com"
+        to:        Dirección de destino
         subject:   Asunto del correo
         html_body: Contenido en formato HTML
 
     Raises:
-        ValueError: Si faltan las credenciales SMTP
+        ValueError: Si faltan las credenciales de Azure
         Exception:  Si falla el envío
     """
-    if not SMTP_EMAIL or not SMTP_PASSWORD:
+    if not CLIENT_ID or not TENANT_ID or not CLIENT_SECRET:
         raise ValueError(
-            "Faltan credenciales SMTP. "
-            "Configura SMTP_EMAIL y SMTP_PASSWORD en GitHub Secrets."
+            "Faltan credenciales de Azure. "
+            "Configura AZURE_CLIENT_ID, AZURE_TENANT_ID y AZURE_CLIENT_SECRET "
+            "en GitHub Secrets."
         )
 
-    msg = MIMEMultipart("alternative")
-    msg["From"]    = SMTP_EMAIL
-    msg["To"]      = to
-    msg["Subject"] = subject
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    token = get_access_token()
 
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
-        smtp.send_message(msg)
+    url = f"https://graph.microsoft.com/v1.0/users/{SENDER_EMAIL}/sendMail"
 
-    print(f"  Correo enviado exitosamente via Office 365 SMTP ✓")
-    print(f"  De:   {SMTP_EMAIL}")
-    print(f"  Para: {to}")
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML",
+                "content": html_body
+            },
+            "toRecipients": [
+                {
+                    "emailAddress": {
+                        "address": to
+                    }
+                }
+            ]
+        },
+        "saveToSentItems": "true"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type":  "application/json"
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code == 202:
+        print(f"  Correo enviado exitosamente via Microsoft Graph ✓")
+        print(f"  De:   {SENDER_EMAIL}")
+        print(f"  Para: {to}")
+    else:
+        raise Exception(
+            f"Error enviando correo: {response.status_code} {response.text}"
+        )
